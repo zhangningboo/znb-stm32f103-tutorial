@@ -1,82 +1,53 @@
-//! Blinks several LEDs stored in an array
-//! --------------------------------------
-//! 本示例展示如何在 STM32F103（或兼容芯片）上通过 HAL 驱动多个 LED 闪烁。
-//! 主要内容：
-//! - 使用 `syst`（系统定时器 SysTick）生成周期中断（定时 1 Hz）
-//! - 通过 GPIO 控制多颗 LED
-//! - 使用数组统一管理多个引脚
-//!
-//! 适合演示嵌入式 Rust 的基础 GPIO 控制与延时机制。
+#![no_std]   // 不使用标准库（嵌入式环境没有操作系统）
+#![no_main]  // 不使用标准 main 函数（由 Embassy 异步运行时接管入口）
 
-#![deny(unsafe_code)]  // 禁止使用 unsafe 代码，保证内存安全
-#![no_std]             // 不链接标准库（嵌入式系统没有操作系统）
-#![no_main]            // 不使用默认 main 函数入口（由 Cortex-M RT 提供入口）
+// ========================
+// 引入所需的库与宏
+// ========================
 
-use panic_halt as _;   // panic 时程序直接停止运行（适合裸机环境）
+use defmt::*;                     // 用于高效的嵌入式日志输出（支持 RTT）
+use embassy_executor::Spawner;    // 任务调度器（用于在 Embassy 中启动异步任务）
+use embassy_stm32::gpio::{Level, Output, Speed};  // STM32 GPIO 模块：电平、输出模式、速度
+use embassy_time::Timer;          // 异步延时定时器（基于 Embassy 的时间调度）
+use {defmt_rtt as _, panic_probe as _};  
+// defmt_rtt: 通过 RTT 接口输出调试日志（高效、非阻塞）
+// panic_probe: 在 panic 时提供简洁报告（避免系统死锁或崩溃）
 
-use nb::block;         // 提供阻塞式等待宏（将非阻塞函数转换为阻塞调用）
+// ========================
+// 程序主入口（异步）
+// ========================
+// Embassy 使用 async/await 异步模型，所以入口函数必须是 async fn。
+// #[embassy_executor::main] 宏会自动生成启动代码，
+// 初始化底层硬件、创建异步执行器并运行 main()。
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
+    // 初始化所有 STM32 外设（时钟、GPIO、定时器等）
+    // `Default::default()` 使用默认配置（通常是 HSI 或 HSE 时钟源）
+    let p = embassy_stm32::init(Default::default());
 
-use cortex_m_rt::entry;          // 定义嵌入式程序入口 #[entry]
-use stm32f1xx_hal::{pac, prelude::*, timer::Timer}; // HAL 外设与通用 trait 导入
-
-#[entry]
-fn main() -> ! {
-    // ------------------------
-    // 获取内核与外设访问句柄
-    // ------------------------
-    let cp = cortex_m::Peripherals::take().unwrap(); // Cortex-M 内核外设（如 SYST）
-    let dp = pac::Peripherals::take().unwrap();      // STM32 设备外设（GPIO、RCC、TIM等）
-
-    // ------------------------
-    // 初始化时钟控制器
-    // ------------------------
-    let mut rcc = dp.RCC.constrain(); // 约束（constrain）RCC，进入安全配置模式
+    // 输出一条调试日志信息（通过 RTT）
+    info!("Hello World!");
 
     // ------------------------
-    // 分割 GPIOA / GPIOC
+    // 配置 LED 引脚
     // ------------------------
-    // 通过 split() 方法，拆分出单独的引脚控制结构
-    let mut gpioa = dp.GPIOA.split(&mut rcc);
-    let mut gpioc = dp.GPIOC.split(&mut rcc);
+    // 创建一个 GPIO 输出对象：
+    // 参数：
+    //   p.PC13 → 板载 LED（Blue Pill 上为 PC13）
+    //   Level::High → 初始电平为高（熄灭，因为 PC13 通常低电平点亮）
+    //   Speed::Low → GPIO 速度为低速，足够驱动 LED
+    let mut led = Output::new(p.PC13, Level::High, Speed::Low);
 
     // ------------------------
-    // 配置 SysTick 定时器
-    // ------------------------
-    // Timer::syst()：使用系统定时器 SYST 创建一个计时器实例
-    // counter_hz()：以 Hz 为单位配置频率
-    let mut timer = Timer::syst(cp.SYST, &rcc.clocks).counter_hz();
-
-    // 让定时器以 1 Hz 频率运行 → 每秒触发一次
-    timer.start(1.Hz()).unwrap();
-
-    // ------------------------
-    // 初始化 LED 引脚数组
-    // ------------------------
-    // 将两个不同端口的引脚都配置为“推挽输出”模式
-    // erase() 将不同类型的引脚擦除为通用类型，方便放入数组
-    let mut leds = [
-        gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase(), // PC13 常为板载 LED
-        gpioa.pa1.into_push_pull_output(&mut gpioa.crl).erase(),  // 另一个可用引脚
-    ];
-
-    // ------------------------
-    // 主循环：闪烁所有 LED
+    // 主循环：异步闪烁 LED
     // ------------------------
     loop {
-        // 等待一次定时器事件（阻塞直到 1 秒过去）
-        block!(timer.wait()).unwrap();
+        info!("high");    // 打印日志：LED 拉高
+        led.set_high();   // 设置引脚为高电平（LED 熄灭）
+        Timer::after_millis(600).await; // 异步延时 600 毫秒（不会阻塞 CPU）
 
-        // 所有 LED 置高电平（点亮）
-        for led in leds.iter_mut() {
-            led.set_high();
-        }
-
-        // 再等待 1 秒
-        block!(timer.wait()).unwrap();
-
-        // 所有 LED 置低电平（熄灭）
-        for led in leds.iter_mut() {
-            led.set_low();
-        }
+        info!("low");     // 打印日志：LED 拉低
+        led.set_low();    // 设置引脚为低电平（LED 点亮）
+        Timer::after_millis(300).await; // 再延时 300 毫秒
     }
 }
