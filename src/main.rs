@@ -44,10 +44,10 @@ async fn main(_spawner: Spawner) {
     loop {
         info!("high");    // 打印日志：LED 拉高
         led.set_high();   // 设置引脚为高电平（LED 熄灭）
-        Timer::after_millis(600).await; // 异步延时 600 毫秒（不会阻塞 CPU）
+        Timer::after_millis(200).await; // 异步延时 600 毫秒（不会阻塞 CPU）
 
         info!("low");     // 打印日志：LED 拉低
         led.set_low();    // 设置引脚为低电平（LED 点亮）
-        Timer::after_millis(300).await; // 再延时 300 毫秒
+        Timer::after_millis(1800).await; // 再延时 300 毫秒
     }
 }
